@@ -25,7 +25,6 @@ function(doc) {
       if (typeof revs === 'undefined' || revs.length === 0) {
           revs = find_matched_revs(revisions, '/bids');
       }
-
       if (typeof revs === 'undefined' || revs.length === 0) {
         return '';
       }
@@ -103,7 +102,7 @@ function(doc) {
         var bids = get_bids(tender);
         return bids.map(function(bid) {
             return ( bid.lotValues || [] ).filter(function(value) {
-                return value.relatedLot === lot.id;
+                return value.relatedLot === lot;
             }).length;
         }).reduce(function( total, curr) {
             return total + curr;
@@ -167,21 +166,21 @@ function(doc) {
         var type = tender.procurementMethodType;
         switch (type) {
             case 'aboveThresholdEU':
-		return (count_lot_qualifications(tender.qualifications, lot) >= 2);
+		        return (count_lot_qualifications(tender.qualifications, lot) >= 2);
             case 'competitiveDialogueEU':
             case 'competitiveDialogueUA':
-		return (count_lot_qualifications(tender.qualifications, lot) >= 3);
+		        return (count_lot_qualifications(tender.qualifications, lot) >= 3);
             default: // belowThreshold && aboveThresholdUA && aboveThresholdUA.defense
-		var lot_awards = (tender.awards || []).filter(function(award) {
-			return ( award.lotID || "" ) === lot.id;
-		});
-		if (lot_awards.length > 0) {
-            		return true;
-		} else {
-			return check_bids_from_bt_atu(tender, lot);
-		}
-		return false;
-        }
+                var lot_awards = (tender.awards || []).filter(function(award) {
+                    return ( award.lotID || "" ) === lot.id;
+                });
+                if (lot_awards.length > 0) {
+                    return true;
+                } else {
+                    return check_bids_from_bt_atu(tender, lot);
+                }
+                    return false;
+                }
     }
 
     function check_tender(tender) {
@@ -268,11 +267,11 @@ function(doc) {
         return false;
     }
 
-    function check_award_for_bid(tender, bid) {
+    function check_award_for_bid(tender, bid_id) {
         var checker = false;
         var is_awarded = false;
         var awards = (tender.awards || []).filter(function(award) {
-            return (award.bid_id === bid.id);
+            return (award.bid_id === bid_id);
         });
         if (awards.length > 0) {
             is_awarded = true;
@@ -283,11 +282,11 @@ function(doc) {
         return ((checker) || (!is_awarded));
     }
 
-    function check_award_for_bid_multilot(tender, bid, lot) {
+    function check_award_for_bid_multilot(tender, bid_id, lot) {
         var checker = false;
         var is_awarded = false;
         var awards = (tender.awards || []).filter(function(award) {
-            return ((award.bid_id === bid.id) && (award.lotID === lot.id));
+            return ((award.bid_id === bid_id) && (award.lotID === lot));
         });
         if (awards.length > 0) {
             is_awarded = true;
@@ -301,11 +300,11 @@ function(doc) {
         return ((checker) || (!is_awarded));
     }
 
-    function check_qualification_for_bid(tender, bid, lot) {
+    function check_qualification_for_bid(tender, bid_id, lot) {
         var checker = false;
         if (lot) {
             (tender.qualifications || []).forEach(function(qualification) {
-                if ((qualification.bidID === bid.id) && (qualification.lotID === lot.id)) {
+                if ((qualification.bidID === bid_id) && (qualification.lotID === lot)) {
                     if (qualification.status === 'active') {
                         checker = true;
                     }
@@ -313,7 +312,7 @@ function(doc) {
             });
         } else {
             (tender.qualifications || []).forEach(function(qualification) {
-                if (qualification.bidID === bid.id) {
+                if (qualification.bidID === bid_id) {
                     if (qualification.status === 'active') {
                         checker = true;
                     }
@@ -324,45 +323,56 @@ function(doc) {
     }
 
     function get_month(date) {
-	return (new Date(date)).getMonth();
+	    return (new Date(date)).getMonth();
     }
 
-    function check_qualification_for_EU_bid(tender, bid, lot) {
+    function get_info_about_cancelled_lot(actual_tender, old_tender, bid_id, lot) {
+        if (lot.id === '9560915dbfbf42fca3a69aefda3fcc08') {
+            qwe = old_tender.qualifications.filter(function (qual) {
+                return ((qual.bidID === bid_id) && (qual.lotID === lot.id));
+            });
+        }
+        var checker = false;
+        if (old_tender.status === 'active.pre-qualification') {
+            old_tender.qualifications.forEach(function(qual) {
+                if ((qual.bidID === bid_id) && (qual.lotID === lot.id) && (qual.status !== 'cancelled')) {
+                    checker = true;
+                }
+            });
+        } else if (old_tender.status === 'active.pre-qualification.stand-still') {
+            old_tender.qualifications.forEach(function(qual) {
+                if ((qual.bidID === bid_id) && (qual.lotID === lot.id) && (qual.status === 'active')) {
+                    checker = true;
+                }
+            });
+        } else {
+            if ("awards" in old_tender) {
+                return (check_qualification_for_bid(actual_tender, bid_id, lot) && check_award_for_bid_multilot(actual_tender, bid_id, lot));
+            }
+            else {
+                return check_qualification_for_bid(actual_tender, bid_id, lot);
+            }
+        }
+        return checker;
+    }
+
+    function check_qualification_for_EU_bid(tender, bid_id, lot) {
         var checker = false;
         if (lot) {
             if (lot.status === 'unsuccessful') {
-                return (check_qualification_for_bid(tender, bid, lot) && check_award_for_bid_multilot(tender, bid, lot));
+                return (check_qualification_for_bid(tender, bid_id, lot) && check_award_for_bid_multilot(tender, bid_id, lot));
             } else {
                 var revs = tender.revisions.slice().reverse().slice(0, tender.revisions.length - 1);
                 var tender_copy = JSON.parse(JSON.stringify(tender));
                 for (var i = 0; i < revs.length; i ++) {
                     tender_copy = jsp.apply(tender_copy, revs[i].changes);
                     var found = tender_copy.lots.filter(function(l) {
-                        return ((l.status !== 'cancelled') && (l.id == lot.id));
-                    })
+                        return ((l.status !== 'cancelled') && (l.id === lot.id));
+                    });
                     if (found.length > 0) {
                         break;
                     }
-                }
-                if (tender_copy.status === 'active.pre-qualification') {
-                    tender_copy.qualifications.forEach(function(qual) {
-                        if ((qual.bidID === bid.id) && (qual.lotID === lot.id) && (qual.status !== 'cancelled')) {
-                            checker = true;
-                        }
-                    });
-                } else if (tender_copy.status === 'active.pre-qualification.stand-still') {
-                    tender_copy.qualifications.forEach(function(qual) {
-                        if ((qual.bidID === bid.id) && (qual.lotID === lot.id) && (qual.status === 'active')) {
-                            checker = true;
-                        }
-                    });
-                } else {
-                    if ("awards" in tender_copy) {
-                        return (check_qualification_for_bid(tender, bid, lot) && check_award_for_bid_multilot(tender, bid, lot));
-                    }
-                    else {
-                        return check_qualification_for_bid(tender, bid, lot);
-                    }
+                    return get_info_about_cancelled_lot(tender, tender_copy, bid, lot);
                 }
             }
         } else {
@@ -372,13 +382,13 @@ function(doc) {
                 var revs = tender.revisions.slice().reverse().slice(0, tender.revisions.length - 1)
                 var tender_copy = JSON.parse(JSON.stringify(tender));
                 prev = jsp.apply(tender_copy, revs[0].changes);
-                if (prev.status == 'active.pre-qualification') {
+                if (prev.status === 'active.pre-qualification') {
                     prev.qualifications.forEach(function(qual) {
                         if (qual.status !== 'cancelled') {
                             checker = true;
                         }
                     });
-                } else if (prev.status == 'active.pre-qualification.stand-still') {
+                } else if (prev.status === 'active.pre-qualification.stand-still') {
                     prev.qualifications.forEach(function(qual) {
                         if (qual.status === 'active') {
                             checker = true;
@@ -386,9 +396,9 @@ function(doc) {
                     });
                 } else {
                     if ('awards' in prev) {
-                        return (check_award_for_bid(tender, bid) && check_qualification_for_bid(tender, bid));
+                        return (check_award_for_bid(tender, bid_id) && check_qualification_for_bid(tender, bid_id));
                     } else {
-                        return check_qualification_for_bid(tender, bid);
+                        return check_qualification_for_bid(tender, bid_id);
                     }
                 }
             }
@@ -396,15 +406,15 @@ function(doc) {
         return checker;
     }
 
-    function check_award_and_qualification(tender, bid, lot) {
+    function check_award_and_qualification(tender, bid_id, lot) {
         var type = tender.procurementMethodType;
         if (['aboveThresholdEU', 'competitiveDialogueEU', 'competitiveDialogueUA'].indexOf(type) !== -1) {
-            return check_qualification_for_EU_bid(tender, bid, lot);
+            return check_qualification_for_EU_bid(tender, bid_id, lot);
         } else {
 		if (lot) {
-			return check_award_for_bid_multilot(tender, bid, lot);
+			return check_award_for_bid_multilot(tender, bid_id, lot);
 		} else {
-                return check_award_for_bid(tender, bid);
+                return check_award_for_bid(tender, bid_id);
 		    }
         }
     }
@@ -441,47 +451,137 @@ function(doc) {
                 initialDate: init_date,
                 status: tender.status,
                 date_terminated: date_terminated,
-                state: state,
+                state: state
             });
         }
     };
 
+    function check_bid(actual_bids, old_bid) {
+        checker = actual_bids.filter(function (bid) {
+            return (bid.id === old_bid.id);
+        });
+        return (checker.length > 0);
+    }
+
+    function check_if_lot_not_cancelled(old_tender, cancelled_lots_ids) {
+        non_cancelled_lots = old_tender.lots.filter(function (lot) {
+            return ((lot.id.indexOf(cancelled_lots_ids) !== -1) && (lot.status !== 'cancelled'));
+        });
+        if (non_cancelled_lots.length > 0) {
+            return non_cancelled_lots;
+        } else {
+            return false;
+        }
+    }
+
+    function find_and_validate_lot(tender, lot_id) {
+        found = tender.lots.filter(function (lot) {
+            return lot.id === lot_id;
+        });
+        return check_lot_bids(tender, found);
+    }
+
+    function find_actual_lot(tender, lot_id) {
+        return tender.lots.filter(function (lot) {
+            return lot.id === lot_id;
+        });
+    }
+
+    function emit_deleted_lotValues(tender, actual_bids) {
+        cancelled_lots = tender.cancellations.filter(function(cancellation) {
+            return ((cancellation.cancellationOf === 'lot') && (cancellation.status === 'active'));
+        });
+        if (cancelled_lots) {
+            cancelled_lots_ids = cancelled_lots.map(function (lot) {
+                return lot.relatedLot;
+            });
+        }
+        if (cancelled_lots_ids.length > 0) {
+            var revs = tender.revisions.slice().reverse().slice(0, tender.revisions.length - 1);
+            var tender_copy = JSON.parse(JSON.stringify(tender));
+            for (var i = 0; i < revs.length; i++) {
+                if (cancelled_lots_ids.length === 0) { return; }
+                try {
+                    var prev = JSON.parse(JSON.stringify(tender_copy));
+                    tender_copy = jsp.apply(tender_copy, revs[i].changes);
+                }
+                catch (e) {}
+                var non_cancelled_lots = check_if_lot_not_cancelled(tender_copy, cancelled_lots_ids);
+                if (non_cancelled_lots) {
+                    non_cancelled_lots.forEach(function(old_lot) {
+                        var id = old_lot.id;
+                        (tender_copy.bids || []).forEach(function (old_bid) {
+                            if (check_bid(actual_bids, old_bid)) {
+                                old_bid.lotValues.forEach(function (lotValue) {
+                                    if (lotValue.relatedLot === old_lot.id) {
+                                        if (get_info_about_cancelled_lot(tender, tender_copy, old_bid.id, old_lot)) {
+                                            var actual_lot = find_actual_lot(tender, old_lot.id)[0];
+                                            var audit = get_audit_for_lot(tender, actual_lot);
+                                            var init_date = find_initial_bid_date(tender.revisions || [], tender_copy.bids.indexOf(old_bid), old_bid.id);
+                                            var date_terminated = date_normalize(actual_lot.date);
+                                            var state = (get_month(bids_disclojure_date) !== get_month(date_terminated)) ? 3 : 2;
+                                            emitter.lot(old_bid.owner, date_normalize(bids_disclojure_date), old_bid, actual_lot, tender, audit, init_date, false, 1);
+                                            emitter.lot(old_bid.owner, date_normalize(date_terminated), old_bid, actual_lot, tender, audit, init_date, date_normalize(date_terminated), state);
+                                        } else {
+                                            actual_lot = find_actual_lot(tender, old_lot.id)[0];
+                                            var audit = get_audit_for_lot(tender, actual_lot);
+                                            var init_date = find_initial_bid_date(tender.revisions || [], tender_copy.bids.indexOf(old_bid), old_bid.id);
+                                            emitter.lot(old_bid.owner, date_normalize(bids_disclojure_date), old_bid, actual_lot, tender, audit, init_date, false, 1);
+                                            emitter.lot(old_bid.owner, date_normalize(bids_disclojure_date), old_bid, actual_lot, tender, audit, init_date, false, 4);
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        cancelled_lots_ids = cancelled_lots_ids.filter(function (id_) {
+                            return id_ !== id;
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+
     function emit_results(tender) {
         var bids = get_bids(tender);
-	if((tender.status === 'cancelled') && (tender.date <  bids_disclojure_date)) {
-		return;
-	}
+        if((tender.status === 'cancelled') && (tender.date <  bids_disclojure_date)) {
+            return;
+        }
+        if (('cancellations' in tender) && (['aboveThresholdEU', 'competitiveDialogueEU'].indexOf(tender.procurementMethodType) !== -1)) {
+            emit_deleted_lotValues(tender, bids, tender.lots);
+        }
         if (bids) {
             if (startDate > new_date) {
                 bids.forEach(function(bid) {
-                if (is_multilot) {
-			(bid.lotValues || []).forEach(function(lotValue) {
-                    		var lot = find_lot_for_bid(tender, lotValue);
-				if (!lot) {
-					return;
-				}
-				if ((lot.status === 'cancelled') && (lot.date < bids_disclojure_date)) {
-					return;
-				}
-				if (check_lot_bids(tender, lot)) {
-					var audit = get_audit_for_lot(tender, lot);
-					var init_date = find_initial_bid_date(tender.revisions || [], tender.bids.indexOf(bid), bid.id);
-					if ((['unsuccessful', 'cancelled'].indexOf(lot.status) !== -1) && (check_award_and_qualification(tender, bid, lot))) {
-						var date_terminated = date_normalize(lot.date);
-						var state = (get_month(bids_disclojure_date) !== get_month(date_terminated)) ? 3: 2;
-                        emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
-						emitter.lot(bid.owner, date_normalize(date_terminated), bid, lot, tender, audit, init_date, date_normalize(date_terminated), state);
-					} else if ((['unsuccessful', 'cancelled'].indexOf(tender.status) !== -1) && (check_award_and_qualification(tender, bid, lot))) {
-						var date_terminated = date_normalize(tender.date);
-						var state = (get_month(bids_disclojure_date) !== get_month(date_terminated)) ? 3: 2;
-                        emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
-                        emitter.lot(bid.owner, date_normalize(date_terminated), bid, lot, tender, audit, init_date, date_normalize(date_terminated), state);
-					} else {
-                        emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
-						emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 4);
-					}
-				}
-			});
+                    if (is_multilot) {
+			    (bid.lotValues || []).forEach(function(lotValue) {
+                    var lot = find_lot_for_bid(tender, lotValue);
+				    if (!lot) {
+					    return;
+				    }
+				    if ((lot.status === 'cancelled') && (lot.date < bids_disclojure_date)) {
+					    return;
+				    }
+				    if (check_lot_bids(tender, lot)) {
+					    var audit = get_audit_for_lot(tender, lot);
+					    var init_date = find_initial_bid_date(tender.revisions || [], tender.bids.indexOf(bid), bid.id);
+					    if ((['unsuccessful', 'cancelled'].indexOf(lot.status) !== -1) && (check_award_and_qualification(tender, bid, lot))) {
+						    var date_terminated = date_normalize(lot.date);
+						    var state = (get_month(bids_disclojure_date) !== get_month(date_terminated)) ? 3: 2;
+                            emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
+						    emitter.lot(bid.owner, date_normalize(date_terminated), bid, lot, tender, audit, init_date, date_normalize(date_terminated), state);
+					    } else if ((['unsuccessful', 'cancelled'].indexOf(tender.status) !== -1) && (check_award_and_qualification(tender, bid, lot))) {
+						    var date_terminated = date_normalize(tender.date);
+						    var state = (get_month(bids_disclojure_date) !== get_month(date_terminated)) ? 3: 2;
+                            emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
+                            emitter.lot(bid.owner, date_normalize(date_terminated), bid, lot, tender, audit, init_date, date_normalize(date_terminated), state);
+					    } else {
+                            emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 1);
+						    emitter.lot(bid.owner, date_normalize(bids_disclojure_date), bid, lot, tender, audit, init_date, false, 4);
+					    }
+				    }
+			    });
                 } else { // is multilot end
                     if (check_tender_bids(tender, bid)) {
                         var audits = get_audit_for_tender(tender);
